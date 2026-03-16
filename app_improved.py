@@ -1,14 +1,14 @@
 import streamlit as st
 from pptx import Presentation
+from pypdf import PdfReader
 import io
 
-st.title("Finance PPT AI Analyst")
+st.title("Finance Document AI Analyst")
 
-# 1. 添加文件上传组件
-uploaded_file = st.file_uploader("请上传您的财务 PPT 文件", type=["pptx"])
+# 1. 修改上传组件，支持 pptx 和 pdf
+uploaded_file = st.file_uploader("请上传您的财务文件 (PPTX 或 PDF)", type=["pptx", "pdf"])
 
 def extract_text_from_pptx(file):
-    """从 PPTX 中提取所有文本"""
     prs = Presentation(file)
     full_text = []
     for slide in prs.slides:
@@ -17,27 +17,38 @@ def extract_text_from_pptx(file):
                 full_text.append(shape.text)
     return "\n".join(full_text)
 
-# 2. 修改逻辑，先检查文件是否上传
-if uploaded_file is not None:
-    st.success("文件上传成功！正在处理中...")
-    
-    # 提取文本
-    ppt_content = extract_text_from_pptx(uploaded_file)
-    
-    # 这里你可以将 ppt_content 发送给 AI
-    st.write("已提取的 PPT 内容预览 (前 500 字):")
-    st.text(ppt_content[:500])
+def extract_text_from_pdf(file):
+    reader = PdfReader(file)
+    full_text = []
+    for page in reader.pages:
+        full_text.append(page.extract_text())
+    return "\n".join(full_text)
 
-    # 3. 如果需要针对性提问，添加聊天窗口
-    st.subheader("针对该 PPT 提问")
+# 2. 修改逻辑，根据后缀名处理
+if uploaded_file is not None:
+    st.success(f"已上传: {uploaded_file.name}")
+    
+    # 根据文件类型选择解析函数
+    if uploaded_file.name.endswith('.pptx'):
+        content = extract_text_from_pptx(uploaded_file)
+    elif uploaded_file.name.endswith('.pdf'):
+        content = extract_text_from_pdf(uploaded_file)
+    else:
+        content = "不支持的文件格式"
+    
+    st.write("文件内容提取预览:")
+    st.text(content[:500] + "...")
+
+    # 3. 针对该内容的提问
+    st.subheader("针对该文档提问")
     question = st.text_input("请输入你想了解的问题：")
     
-    if st.button("开始分析并回答"):
+    if st.button("开始分析"):
         if question:
-            # 此处调用你的 AI 模型 (如 OpenAI 或 LangChain)
-            st.write(f"正在基于 PPT 内容分析问题: '{question}'...")
-            # st.write(ai_response) # 你的 AI 回答逻辑
+            st.write(f"正在分析文件内容...")
+            # 在此处集成你的 LLM 分析逻辑
         else:
             st.warning("请输入问题后再点击分析。")
 else:
-    st.info("请在上方上传一个财务 PPT 文件以开始分析。")
+    st.info("请上传财务文档以开始分析。")
+
