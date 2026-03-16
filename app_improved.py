@@ -11,10 +11,13 @@ st.title("Document AI Analyst")
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 
 # 3. 初始化 LLM 模型 (使用 DeepSeek)
+# 确保 base_url 和 api_key 参数传递正确
 llm = ChatOpenAI(
     model="deepseek-chat", 
-    api_key=api_key, 
-    base_url="https://api.deepseek.com"
+    openai_api_key=api_key,       # 这里显式指定参数名
+    openai_api_base="https://api.deepseek.com", # 部分旧版本或特定环境使用这个参数
+    base_url="https://api.deepseek.com",        # 新版本使用这个
+    max_retries=2
 )
 
 # 4. 定义提取函数
@@ -41,8 +44,13 @@ if uploaded_file:
                 SystemMessage(content="你是一位通用的学习助力，擅长识别学科关键知识点并把它们整理成一条线，然后分析解释知识点。"),
                 HumanMessage(content=f"文档内容：{content}\n\n问题：{question}")
             ]
-            response = llm.invoke(messages)
-            st.markdown("### 分析结果：")
-            st.write(response.content)
+            try:
+                    response = llm.invoke(messages)
+                    st.markdown("### 分析结果：")
+                    st.write(response.content)
+                except Exception as e:
+                    # 这会把原本隐藏的详细错误打印在页面上，帮你定位到底是余额不足还是 Key 错误
+                    st.error(f"API 调用失败: {str(e)}")
+ 
 
 
