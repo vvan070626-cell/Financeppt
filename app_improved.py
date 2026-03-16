@@ -48,7 +48,7 @@ if uploaded_file:
                     response = llm.invoke(messages)
                     st.markdown("### 分析结果：")
                     st.write(response.content)
-                except Exception as e:
+            except Exception as e:
                     # 这会把原本隐藏的详细错误打印在页面上，帮你定位到底是余额不足还是 Key 错误
                     st.error(f"API 调用失败: {str(e)}")
  
