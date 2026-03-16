@@ -2,7 +2,7 @@ import streamlit as st
 from pptx import Presentation
 from pypdf import PdfReader
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 # 1. 页面配置
 st.title("Document AI Analyst")
