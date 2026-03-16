@@ -38,7 +38,7 @@ if uploaded_file:
     if st.button("开始 AI 分析"):
         with st.spinner("AI 正在分析中..."):
             messages = [
-                SystemMessage(content="你是一位专业分析师。"),
+                SystemMessage(content="你是一位通用的学习助力，擅长识别学科关键知识点并把它们整理成一条线，然后分析解释知识点。"),
                 HumanMessage(content=f"文档内容：{content}\n\n问题：{question}")
             ]
             response = llm.invoke(messages)
