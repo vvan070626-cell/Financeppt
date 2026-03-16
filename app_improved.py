@@ -1,54 +1,48 @@
 import streamlit as st
 from pptx import Presentation
 from pypdf import PdfReader
-import io
+from langchain_openai import ChatOpenAI
+from langchain.schema import HumanMessage, SystemMessage
 
-st.title("Finance Document AI Analyst")
+# 1. 页面配置
+st.title("Document AI Analyst")
 
-# 1. 修改上传组件，支持 pptx 和 pdf
-uploaded_file = st.file_uploader("请上传您的财务文件 (PPTX 或 PDF)", type=["pptx", "pdf"])
+# 2. 从 Secrets 读取 API Key (请在 Streamlit Dashboard 设置)
+api_key = st.secrets["DEEPSEEK_API_KEY"]
 
+# 3. 初始化 LLM 模型 (使用 DeepSeek)
+llm = ChatOpenAI(
+    model="deepseek-chat", 
+    api_key=api_key, 
+    base_url="https://api.deepseek.com"
+)
+
+# 4. 定义提取函数
 def extract_text_from_pptx(file):
     prs = Presentation(file)
-    full_text = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                full_text.append(shape.text)
-    return "\n".join(full_text)
+    return "\n".join([shape.text for slide in prs.slides for shape in slide.shapes if hasattr(shape, "text")])
 
 def extract_text_from_pdf(file):
     reader = PdfReader(file)
-    full_text = []
-    for page in reader.pages:
-        full_text.append(page.extract_text())
-    return "\n".join(full_text)
+    return "\n".join([page.extract_text() for page in reader.pages])
 
-# 2. 修改逻辑，根据后缀名处理
-if uploaded_file is not None:
-    st.success(f"已上传: {uploaded_file.name}")
-    
-    # 根据文件类型选择解析函数
-    if uploaded_file.name.endswith('.pptx'):
-        content = extract_text_from_pptx(uploaded_file)
-    elif uploaded_file.name.endswith('.pdf'):
-        content = extract_text_from_pdf(uploaded_file)
-    else:
-        content = "不支持的文件格式"
-    
-    st.write("文件内容提取预览:")
+# 5. 主逻辑
+uploaded_file = st.file_uploader("请上传您的文件 (PPTX 或 PDF)", type=["pptx", "pdf"])
+
+if uploaded_file:
+    content = extract_text_from_pptx(uploaded_file) if uploaded_file.name.endswith('.pptx') else extract_text_from_pdf(uploaded_file)
+    st.write("文件内容提取预览 (前 500 字):")
     st.text(content[:500] + "...")
 
-    # 3. 针对该内容的提问
-    st.subheader("针对该文档提问")
     question = st.text_input("请输入你想了解的问题：")
-    
-    if st.button("开始分析"):
-        if question:
-            st.write(f"正在分析文件内容...")
-            # 在此处集成你的 LLM 分析逻辑
-        else:
-            st.warning("请输入问题后再点击分析。")
-else:
-    st.info("请上传财务文档以开始分析。")
+    if st.button("开始 AI 分析"):
+        with st.spinner("AI 正在分析中..."):
+            messages = [
+                SystemMessage(content="你是一位专业分析师。"),
+                HumanMessage(content=f"文档内容：{content}\n\n问题：{question}")
+            ]
+            response = llm.invoke(messages)
+            st.markdown("### 分析结果：")
+            st.write(response.content)
+
 
