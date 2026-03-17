@@ -4,12 +4,23 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from pptx import Presentation
 import fitz  # PyMuPDF
 import io
+import sqlite3
+from datetime import datetime
 
+# ─────────────────────────────────────────────
 # 页面配置
-st.set_page_config(page_title="AI 学习助手", layout="wide")
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="AI 学习助手",
+    page_icon="[AI]",
+    layout="wide"
+)
 
+# ─────────────────────────────────────────────
 # 初始化 LLM
+# ─────────────────────────────────────────────
 api_key = st.secrets["DEEPSEEK_API_KEY"]
+
 llm = ChatOpenAI(
     model="deepseek-chat",
     openai_api_key=api_key,
@@ -17,75 +28,286 @@ llm = ChatOpenAI(
     max_retries=2
 )
 
+# ─────────────────────────────────────────────
 # 文本提取函数
+# ─────────────────────────────────────────────
 def extract_pptx(file_bytes):
     prs = Presentation(io.BytesIO(file_bytes))
-    texts = [shape.text_frame.text for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    texts = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    line = " ".join([run.text for run in para.runs]).strip()
+                    if line:
+                        texts.append(line)
     return "\n".join(texts)
 
 def extract_pdf(file_bytes):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     return "\n".join([page.get_text() for page in doc])
 
-# 状态初始化
-if "chat_histories" not in st.session_state: st.session_state.chat_histories = {}
-if "file_contents" not in st.session_state: st.session_state.file_contents = {}
-if "active_file" not in st.session_state: st.session_state.active_file = None
+def extract_content(uploaded_file):
+    file_bytes = uploaded_file.read()
+    name = uploaded_file.name.lower()
+    if name.endswith(".pptx"):
+        return extract_pptx(file_bytes)
+    elif name.endswith(".pdf"):
+        return extract_pdf(file_bytes)
+    return None
 
-# --- 侧边栏：对话目录 ---
+# ─────────────────────────────────────────────
+# SQLite 工具函数
+# ─────────────────────────────────────────────
+DB_PATH = "ai_study_assistant.sqlite3"
+
+def db_conn():
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
+
+def db_init():
+    con = db_conn()
+    cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS files (
+            filename   TEXT PRIMARY KEY,
+            content    TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename   TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
+
+def db_upsert_file(filename: str, content: str):
+    con = db_conn()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO files(filename, content, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(filename) DO UPDATE SET
+            content=excluded.content,
+            updated_at=excluded.updated_at
+    """, (filename, content, datetime.utcnow().isoformat()))
+    con.commit()
+    con.close()
+
+def db_add_message(filename: str, role: str, content: str):
+    con = db_conn()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO messages(filename, role, content, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (filename, role, content, datetime.utcnow().isoformat()))
+    con.commit()
+    con.close()
+
+def db_load_all():
+    """从数据库恢复所有文件内容和聊天记录"""
+    con = db_conn()
+    cur = con.cursor()
+
+    cur.execute("SELECT filename, content FROM files ORDER BY updated_at DESC")
+    file_contents = {fn: ct for fn, ct in cur.fetchall()}
+
+    chat_histories = {fn: [] for fn in file_contents.keys()}
+    cur.execute("SELECT filename, role, content FROM messages ORDER BY id ASC")
+    for fn, role, content in cur.fetchall():
+        if fn in chat_histories:
+            chat_histories[fn].append({"role": role, "content": content})
+
+    con.close()
+    return file_contents, chat_histories
+
+def db_clear_chat(filename: str):
+    con = db_conn()
+    cur = con.cursor()
+    cur.execute("DELETE FROM messages WHERE filename=?", (filename,))
+    con.commit()
+    con.close()
+
+def db_delete_file(filename: str):
+    """从数据库删除文件及其对话记录"""
+    con = db_conn()
+    cur = con.cursor()
+    cur.execute("DELETE FROM messages WHERE filename=?", (filename,))
+    cur.execute("DELETE FROM files WHERE filename=?", (filename,))
+    con.commit()
+    con.close()
+
+# ─────────────────────────────────────────────
+# 启动时：初始化 DB，并从 DB 恢复状态
+# ─────────────────────────────────────────────
+db_init()
+
+if "file_contents" not in st.session_state:
+    st.session_state.file_contents = {}
+
+if "chat_histories" not in st.session_state:
+    st.session_state.chat_histories = {}
+
+if "active_file" not in st.session_state:
+    st.session_state.active_file = None
+
+# 关键：刷新/重启后，如果 session_state 是空的，就从 DB 恢复
+if not st.session_state.file_contents and not st.session_state.chat_histories:
+    fc, ch = db_load_all()
+    st.session_state.file_contents = fc
+    st.session_state.chat_histories = ch
+    # 默认激活第一个文件
+    if fc and st.session_state.active_file is None:
+        st.session_state.active_file = next(iter(fc.keys()))
+
+# ─────────────────────────────────────────────
+# 侧边栏：文件上传 + 对话目录
+# ─────────────────────────────────────────────
 with st.sidebar:
-    st.title("📂 对话目录")
-    uploaded_files = st.file_uploader("上传 PPT/PDF", type=["pptx", "pdf"], accept_multiple_files=True)
-    
+    st.title("AI 学习助手")
+    st.caption("上传 PPT / PDF，每个文件独立对话")
+
+    st.divider()
+
+    # 文件上传区
+    uploaded_files = st.file_uploader(
+        "上传文件（支持 .pptx / .pdf）",
+        type=["pptx", "pdf"],
+        accept_multiple_files=True
+    )
+
+    # 处理新上传的文件
     if uploaded_files:
         for file in uploaded_files:
-            if file.name not in st.session_state.file_contents:
-                with st.spinner(f"正在分析 {file.name}..."):
-                    content = extract_pptx(file.read()) if file.name.endswith(".pptx") else extract_pdf(file.read())
-                    st.session_state.file_contents[file.name] = content
-                    st.session_state.chat_histories[file.name] = []
-        
-        st.divider()
-        st.subheader("历史对话")
-        for fname in st.session_state.file_contents.keys():
-            if st.button(fname, use_container_width=True):
-                st.session_state.active_file = fname
+            fname = file.name
+            if fname not in st.session_state.file_contents:
+                with st.spinner(f"正在提取 {fname}..."):
+                    content = extract_content(file)
+                    if content:
+                        st.session_state.file_contents[fname] = content
+                        st.session_state.chat_histories[fname] = []
+                        db_upsert_file(fname, content)   # 持久化到 DB
+                        st.success(f"{fname} 提取成功！")
+                        # 自动跳到刚上传的文件
+                        st.session_state.active_file = fname
+                    else:
+                        st.error(f"{fname} 提取失败，请检查格式。")
 
-# --- 主区域：聊天窗口 ---
+    # 对话目录：列出所有已处理的文件
+    if st.session_state.file_contents:
+        st.divider()
+        st.subheader("对话目录")
+
+        for fname in list(st.session_state.file_contents.keys()):
+            col1, col2 = st.columns([5, 1])
+
+            # 当前激活的文件高亮显示
+            is_active = (st.session_state.active_file == fname)
+            label = f"**> {fname}**" if is_active else fname
+
+            with col1:
+                if st.button(label, key=f"nav_{fname}", use_container_width=True):
+                    st.session_state.active_file = fname
+                    st.rerun()
+
+            # 删除按钮（X）
+            with col2:
+                if st.button("X", key=f"del_{fname}"):
+                    db_delete_file(fname)
+                    del st.session_state.file_contents[fname]
+                    del st.session_state.chat_histories[fname]
+                    # 如果删除的是当前激活的，就切到第一个
+                    if st.session_state.active_file == fname:
+                        remaining = list(st.session_state.file_contents.keys())
+                        st.session_state.active_file = remaining[0] if remaining else None
+                    st.rerun()
+
+# ─────────────────────────────────────────────
+# 主区域：聊天窗口
+# ─────────────────────────────────────────────
 if st.session_state.active_file:
-    fname = st.session_state.active_file
-    st.header(f"💬 当前对话: {fname}")
-    
-    # 显示历史记录
-    for msg in st.session_state.chat_histories[fname]:
+    fname   = st.session_state.active_file
+    content = st.session_state.file_contents[fname]
+    history = st.session_state.chat_histories[fname]
+
+    # 标题栏 + 清空按钮
+    col_title, col_clear = st.columns([8, 1])
+    with col_title:
+        st.header(f"当前对话：{fname}")
+    with col_clear:
+        st.write("")  # 对齐用
+        if history:
+            if st.button("清空对话", key=f"clear_{fname}"):
+                st.session_state.chat_histories[fname] = []
+                db_clear_chat(fname)
+                st.rerun()
+
+    st.divider()
+
+    # 显示历史对话
+    for msg in history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            
-    # 用户输入
-    if prompt := st.chat_input("输入问题..."):
-        st.session_state.chat_histories[fname].append({"role": "user", "content": prompt})
+
+    # 用户输入框
+    user_input = st.chat_input(
+        placeholder="请输入你的问题...",
+        key=f"chat_input_{fname}"
+    )
+
+    if user_input:
+        # 追加用户消息到 session_state 和 DB
+        history.append({"role": "user", "content": user_input})
+        db_add_message(fname, "user", user_input)
+
         with st.chat_message("user"):
-            st.write(prompt)
-            
+            st.write(user_input)
+
+        # 构建发送给 LLM 的消息列表
+        messages = [
+            SystemMessage(content=(
+                f"你是一位专业的学习助手，擅长分析学科知识点。\n"
+                f"以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：\n\n"
+                f"【文档内容】\n{content}\n\n"
+                f"请用中文回答，回答要清晰、结构化。"
+            ))
+        ]
+
+        # 多轮对话记忆
+        for msg in history:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            else:
+                messages.append(AIMessage(content=msg["content"]))
+
         # 调用 AI
         with st.chat_message("assistant"):
-            messages = [SystemMessage(content=f"基于文档回答：{st.session_state.file_contents[fname]}")]
-            messages += [HumanMessage(content=m["content"]) if m["role"]=="user" else AIMessage(content=m["content"]) 
-                         for m in st.session_state.chat_histories[fname]]
-            
-            with st.spinner("思考中..."):
+            with st.spinner("AI 思考中..."):
                 try:
-                    response = llm.invoke(messages).content
-                    st.write(response)
-                    st.session_state.chat_histories[fname].append({"role": "assistant", "content": response})
+                    response = llm.invoke(messages)
+                    reply = response.content
+                    st.write(reply)
+
+                    # 追加 AI 回复到 session_state 和 DB
+                    history.append({"role": "assistant", "content": reply})
+                    db_add_message(fname, "assistant", reply)
+
+                    # 写回 session_state
+                    st.session_state.chat_histories[fname] = history
+
                 except Exception as e:
-                    st.error(f"发生错误: {e}")
-    
-    if st.button("清空当前对话"):
-        st.session_state.chat_histories[fname] = []
-        st.rerun()
+                    st.error(f"API 调用失败：{str(e)}")
+
 else:
-    st.info("请从左侧栏上传文件或选择一个已有的文件开始对话。")
+    # 没有任何文件时，显示引导提示
+    st.title("AI 学习助手")
+    st.info("请从左侧栏上传至少一个 .pptx 或 .pdf 文件以开始对话。")
+
 
 
 
