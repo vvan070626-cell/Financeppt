@@ -73,8 +73,7 @@ def db_init():
             content    TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
-    """
-    )
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,8 +82,7 @@ def db_init():
             content    TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    """
-    )
+    """)
     con.commit()
     con.close()
 
@@ -196,18 +194,14 @@ with st.sidebar:
 # 主区域：多 Tab 聊天窗口
 # ─────────────────────────────────────────────
 if st.session_state.file_contents:
-    # 获取所有文件名
     filenames = list(st.session_state.file_contents.keys())
-    
-    # 创建 tabs，每个文件一个 tab
     tabs = st.tabs(filenames)
-    
-    # 为每个 tab 创建对话界面
+
     for tab, fname in zip(tabs, filenames):
         with tab:
             content = st.session_state.file_contents[fname]
             history = st.session_state.chat_histories[fname]
-            
+
             # 标题栏 + 清空/删除按钮
             col_title, col_buttons = st.columns([7, 2])
             with col_title:
@@ -226,45 +220,42 @@ if st.session_state.file_contents:
                         del st.session_state.file_contents[fname]
                         del st.session_state.chat_histories[fname]
                         st.rerun()
-            
+
             st.divider()
-            
+
             # 显示历史对话
-            # 使用 container 来实现可滚动的聊天区域
             chat_container = st.container()
             with chat_container:
                 for msg in history:
                     with st.chat_message(msg["role"]):
                         st.write(msg["content"])
-            
+
             st.divider()
-            
-            # 用户输入框（放在底部）
+
+            # 用户输入框
             user_input = st.chat_input(
                 placeholder=f"问关于 {fname} 的问题...",
                 key=f"chat_input_{fname}"
             )
 
             if user_input:
-                # 追加用户消息到 session_state 和 DB
                 history.append({"role": "user", "content": user_input})
                 db_add_message(fname, "user", user_input)
 
                 with st.chat_message("user"):
                     st.write(user_input)
 
-                # 构建发送给 LLM 的消息列表
+                # 修复后的部分（关键改动）
                 messages = [
-                    SystemMessage(content=(
-                        f"你是一位专业的学习助手，擅长分析学科知识点。
-                        f"以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：
-                        f"\n
-                        f"【文档内容】\n{content}\n
-                        f"请用中文回答，回答要清晰、结构化。"
-                    ))
+                    SystemMessage(
+                        content=f"""你是一位专业的学习助手，擅长分析学科知识点。
+以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：
+【文档内容】
+{content}
+请用中文回答，回答要清晰、结构化。"""
+                    )
                 ]
 
-                # 多轮对话记忆
                 for msg in history:
                     if msg["role"] == "user":
                         messages.append(HumanMessage(content=msg["content"]))
@@ -279,17 +270,11 @@ if st.session_state.file_contents:
                             reply = response.content
                             st.write(reply)
 
-                            # 追加 AI 回复到 session_state 和 DB
                             history.append({"role": "assistant", "content": reply})
                             db_add_message(fname, "assistant", reply)
-
-                            # 写回 session_state
                             st.session_state.chat_histories[fname] = history
-
                         except Exception as e:
                             st.error(f"API 调用失败：{str(e)}")
-
 else:
-    # 没有任何文件时，显示引导提示
     st.title("AI 学习助手")
     st.info("请从左侧栏上传至少一个 .pptx 或 .pdf 文件以开始对话。")
