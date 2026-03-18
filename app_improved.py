@@ -73,7 +73,8 @@ def db_init():
             content    TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
-    """)
+    """
+    )
     cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +83,8 @@ def db_init():
             content    TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    """)
+    """
+    )
     con.commit()
     con.close()
 
@@ -153,24 +155,18 @@ if "file_contents" not in st.session_state:
 if "chat_histories" not in st.session_state:
     st.session_state.chat_histories = {}
 
-if "active_file" not in st.session_state:
-    st.session_state.active_file = None
-
 # 关键：刷新/重启后，如果 session_state 是空的，就从 DB 恢复
 if not st.session_state.file_contents and not st.session_state.chat_histories:
     fc, ch = db_load_all()
     st.session_state.file_contents = fc
     st.session_state.chat_histories = ch
-    # 默认激活第一个文件
-    if fc and st.session_state.active_file is None:
-        st.session_state.active_file = next(iter(fc.keys()))
 
 # ─────────────────────────────────────────────
-# 侧边栏：文件上传 + 对话目录
+# 侧边栏：文件上传
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.title("AI 学习助手")
-    st.caption("上传 PPT / PDF，每个文件独立对话")
+    st.caption("上传 PPT / PDF，在 Tabs 中独立对话")
 
     st.divider()
 
@@ -193,122 +189,107 @@ with st.sidebar:
                         st.session_state.chat_histories[fname] = []
                         db_upsert_file(fname, content)   # 持久化到 DB
                         st.success(f"{fname} 提取成功！")
-                        # 自动跳到刚上传的文件
-                        st.session_state.active_file = fname
                     else:
                         st.error(f"{fname} 提取失败，请检查格式。")
 
-    # 对话目录：列出所有已处理的文件
-    if st.session_state.file_contents:
-        st.divider()
-        st.subheader("对话目录")
-
-        for fname in list(st.session_state.file_contents.keys()):
-            col1, col2 = st.columns([5, 1])
-
-            # 当前激活的文件高亮显示
-            is_active = (st.session_state.active_file == fname)
-            label = f"**> {fname}**" if is_active else fname
-
-            with col1:
-                if st.button(label, key=f"nav_{fname}", use_container_width=True):
-                    st.session_state.active_file = fname
-                    st.rerun()
-
-            # 删除按钮（X）
-            with col2:
-                if st.button("X", key=f"del_{fname}"):
-                    db_delete_file(fname)
-                    del st.session_state.file_contents[fname]
-                    del st.session_state.chat_histories[fname]
-                    # 如果删除的是当前激活的，就切到第一个
-                    if st.session_state.active_file == fname:
-                        remaining = list(st.session_state.file_contents.keys())
-                        st.session_state.active_file = remaining[0] if remaining else None
-                    st.rerun()
-
 # ─────────────────────────────────────────────
-# 主区域：聊天窗口
+# 主区域：多 Tab 聊天窗口
 # ─────────────────────────────────────────────
-if st.session_state.active_file:
-    fname   = st.session_state.active_file
-    content = st.session_state.file_contents[fname]
-    history = st.session_state.chat_histories[fname]
+if st.session_state.file_contents:
+    # 获取所有文件名
+    filenames = list(st.session_state.file_contents.keys())
+    
+    # 创建 tabs，每个文件一个 tab
+    tabs = st.tabs(filenames)
+    
+    # 为每个 tab 创建对话界面
+    for tab, fname in zip(tabs, filenames):
+        with tab:
+            content = st.session_state.file_contents[fname]
+            history = st.session_state.chat_histories[fname]
+            
+            # 标题栏 + 清空/删除按钮
+            col_title, col_buttons = st.columns([7, 2])
+            with col_title:
+                st.markdown(f"### 📄 {fname}")
+            with col_buttons:
+                col_clear, col_delete = st.columns(2)
+                with col_clear:
+                    if history:
+                        if st.button("🗑️ 清空", key=f"clear_{fname}"):
+                            st.session_state.chat_histories[fname] = []
+                            db_clear_chat(fname)
+                            st.rerun()
+                with col_delete:
+                    if st.button("✕ 删除", key=f"del_{fname}"):
+                        db_delete_file(fname)
+                        del st.session_state.file_contents[fname]
+                        del st.session_state.chat_histories[fname]
+                        st.rerun()
+            
+            st.divider()
+            
+            # 显示历史对话
+            # 使用 container 来实现可滚动的聊天区域
+            chat_container = st.container()
+            with chat_container:
+                for msg in history:
+                    with st.chat_message(msg["role"]):
+                        st.write(msg["content"])
+            
+            st.divider()
+            
+            # 用户输入框（放在底部）
+            user_input = st.chat_input(
+                placeholder=f"问关于 {fname} 的问题...",
+                key=f"chat_input_{fname}"
+            )
 
-    # 标题栏 + 清空按钮
-    col_title, col_clear = st.columns([8, 1])
-    with col_title:
-        st.header(f"当前对话：{fname}")
-    with col_clear:
-        st.write("")  # 对齐用
-        if history:
-            if st.button("清空对话", key=f"clear_{fname}"):
-                st.session_state.chat_histories[fname] = []
-                db_clear_chat(fname)
-                st.rerun()
+            if user_input:
+                # 追加用户消息到 session_state 和 DB
+                history.append({"role": "user", "content": user_input})
+                db_add_message(fname, "user", user_input)
 
-    st.divider()
+                with st.chat_message("user"):
+                    st.write(user_input)
 
-    # 显示历史对话
-    for msg in history:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+                # 构建发送给 LLM 的消息列表
+                messages = [
+                    SystemMessage(content=(
+                        f"你是一位专业的学习助手，擅长分析学科知识点。
+                        f"以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：
+                        f"\n
+                        f"【文档内容】\n{content}\n
+                        f"请用中文回答，回答要清晰、结构化。"
+                    ))
+                ]
 
-    # 用户输入框
-    user_input = st.chat_input(
-        placeholder="请输入你的问题...",
-        key=f"chat_input_{fname}"
-    )
+                # 多轮对话记忆
+                for msg in history:
+                    if msg["role"] == "user":
+                        messages.append(HumanMessage(content=msg["content"]))
+                    else:
+                        messages.append(AIMessage(content=msg["content"]))
 
-    if user_input:
-        # 追加用户消息到 session_state 和 DB
-        history.append({"role": "user", "content": user_input})
-        db_add_message(fname, "user", user_input)
+                # 调用 AI
+                with st.chat_message("assistant"):
+                    with st.spinner("AI 思考中..."):
+                        try:
+                            response = llm.invoke(messages)
+                            reply = response.content
+                            st.write(reply)
 
-        with st.chat_message("user"):
-            st.write(user_input)
+                            # 追加 AI 回复到 session_state 和 DB
+                            history.append({"role": "assistant", "content": reply})
+                            db_add_message(fname, "assistant", reply)
 
-        # 构建发送给 LLM 的消息列表
-        messages = [
-            SystemMessage(content=(
-                f"你是一位专业的学习助手，擅长分析学科知识点。\n"
-                f"以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：\n\n"
-                f"【文档内容】\n{content}\n\n"
-                f"请用中文回答，回答要清晰、结构化。"
-            ))
-        ]
+                            # 写回 session_state
+                            st.session_state.chat_histories[fname] = history
 
-        # 多轮对话记忆
-        for msg in history:
-            if msg["role"] == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            else:
-                messages.append(AIMessage(content=msg["content"]))
-
-        # 调用 AI
-        with st.chat_message("assistant"):
-            with st.spinner("AI 思考中..."):
-                try:
-                    response = llm.invoke(messages)
-                    reply = response.content
-                    st.write(reply)
-
-                    # 追加 AI 回复到 session_state 和 DB
-                    history.append({"role": "assistant", "content": reply})
-                    db_add_message(fname, "assistant", reply)
-
-                    # 写回 session_state
-                    st.session_state.chat_histories[fname] = history
-
-                except Exception as e:
-                    st.error(f"API 调用失败：{str(e)}")
+                        except Exception as e:
+                            st.error(f"API 调用失败：{str(e)}")
 
 else:
     # 没有任何文件时，显示引导提示
     st.title("AI 学习助手")
     st.info("请从左侧栏上传至少一个 .pptx 或 .pdf 文件以开始对话。")
-
-
-
-
-
