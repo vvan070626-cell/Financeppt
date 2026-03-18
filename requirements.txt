@@ -1,7 +1,7 @@
-streamlit==1.38.0
-langchain-openai==0.2.2
-langchain-core==0.3.12
+streamlit>=1.38.0,<1.56.0
+langchain-openai>=0.2.2,<0.3.0
+langchain-core>=0.3.12,<0.4.0
 python-pptx==1.0.2
 PyMuPDF==1.24.10
-openai==1.51.2
-tenacity==9.0.0
+openai>=1.51.0,<1.52.0
+tenacity>=8.1.0,<9.0.0
