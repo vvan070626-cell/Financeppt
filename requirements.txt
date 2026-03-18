@@ -1,6 +1,8 @@
-streamlit
-langchain
-langchain-openai
-langchain-core
-python-pptx
-pymupdf
+streamlit==1.38.0
+langchain-openai==0.2.2
+langchain-core==0.3.12
+python-pptx==1.0.2
+PyMuPDF==1.24.10  # fitz
+sqlite3  # Python内置，无需安装
+openai==1.51.2    # langchain-openai依赖
+tenacity==9.0.0   # 重试机制
