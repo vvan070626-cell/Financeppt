@@ -7,7 +7,6 @@ import io
 import sqlite3
 from datetime import datetime
 import threading
-import time
 
 # ─────────────────────────────────────────────
 # 页面配置
@@ -19,9 +18,8 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────
-# 全局锁（防止并发冲突）
+# 全局锁
 db_lock = threading.Lock()
-state_lock = threading.Lock()
 
 # ─────────────────────────────────────────────
 # 初始化 LLM
@@ -40,7 +38,7 @@ def init_llm():
 llm = init_llm()
 
 # ─────────────────────────────────────────────
-# 文本提取函数（修复：去掉错误转义）
+# 文本提取函数（✅ 修复：单\n）
 # ─────────────────────────────────────────────
 def extract_pptx(file_bytes):
     prs = Presentation(io.BytesIO(file_bytes))
@@ -52,11 +50,11 @@ def extract_pptx(file_bytes):
                     line = " ".join([run.text for run in para.runs]).strip()
                     if line:
                         texts.append(line)
-    return "\n".join(texts)
+    return "\n".join(texts)  # ✅ 修复
 
 def extract_pdf(file_bytes):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    return "\n".join([page.get_text() for page in doc])
+    return "\n".join([page.get_text() for page in doc])  # ✅ 修复
 
 def extract_content(uploaded_file):
     file_bytes = uploaded_file.read()
@@ -68,7 +66,7 @@ def extract_content(uploaded_file):
     return None
 
 # ─────────────────────────────────────────────
-# SQLite 工具函数（线程安全）
+# SQLite 工具函数
 # ─────────────────────────────────────────────
 DB_PATH = "ai_study_assistant.sqlite3"
 
@@ -130,8 +128,8 @@ def db_load_all():
     file_contents = {fn: ct for fn, ct in cur.fetchall()}
 
     chat_histories = {fn: [] for fn in file_contents.keys()}
-    cur.execute("SELECT filename, role, content, created_at FROM messages ORDER BY id ASC")
-    for fn, role, content, created_at in cur.fetchall():
+    cur.execute("SELECT filename, role, content FROM messages ORDER BY id ASC")
+    for fn, role, content in cur.fetchall():
         if fn in chat_histories:
             chat_histories[fn].append({"role": role, "content": content})
     con.close()
@@ -155,53 +153,6 @@ def db_delete_file(filename: str):
         con.close()
 
 # ─────────────────────────────────────────────
-# AI 后台处理函数（支持并发）
-# ─────────────────────────────────────────────
-def process_ai_request(fname, user_input, content, history):
-    """独立线程处理AI请求"""
-    try:
-        # 构建消息
-        messages = [
-            SystemMessage(content=f"""你是一位专业的学习助手，擅长分析学科知识点。
-以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：
-【文档内容】
-{content}
-请用中文回答，回答要清晰、结构化、专业。""")
-        ]
-        
-        # 添加历史对话
-        for msg in history:
-            if msg["role"] == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant":
-                messages.append(AIMessage(content=msg["content"]))
-
-        # 调用AI
-        response = llm.invoke(messages)
-        reply = response.content
-        
-        # 保存到DB
-        db_add_message(fname, "assistant", reply)
-        
-        # 更新session_state（加锁）
-        with state_lock:
-            if fname in st.session_state.chat_histories:
-                st.session_state.chat_histories[fname].append({
-                    "role": "assistant", 
-                    "content": reply
-                })
-        
-    except Exception as e:
-        error_msg = f"AI处理出错：{str(e)}"
-        db_add_message(fname, "assistant", error_msg)
-        with state_lock:
-            if fname in st.session_state.chat_histories:
-                st.session_state.chat_histories[fname].append({
-                    "role": "assistant", 
-                    "content": error_msg
-                })
-
-# ─────────────────────────────────────────────
 # 初始化
 # ─────────────────────────────────────────────
 db_init()
@@ -211,19 +162,17 @@ if "file_contents" not in st.session_state:
 if "chat_histories" not in st.session_state:
     st.session_state.chat_histories = {}
 
-# 从DB恢复状态
 if not st.session_state.file_contents:
     fc, ch = db_load_all()
-    with state_lock:
-        st.session_state.file_contents = fc
-        st.session_state.chat_histories = ch
+    st.session_state.file_contents = fc
+    st.session_state.chat_histories = ch
 
 # ─────────────────────────────────────────────
 # 侧边栏：文件上传
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.title("🤖 AI 学习助手")
-    st.caption("📄 上传 PPT/PDF，多Tab**并发**对话")
+    st.caption("📄 上传PPT/PDF，Tab间**独立**对话")
 
     st.divider()
 
@@ -240,14 +189,13 @@ with st.sidebar:
                 with st.spinner(f"提取 {fname}..."):
                     content = extract_content(file)
                     if content:
-                        with state_lock:
-                            st.session_state.file_contents[fname] = content
-                            st.session_state.chat_histories[fname] = []
+                        st.session_state.file_contents[fname] = content
+                        st.session_state.chat_histories[fname] = []
                         db_upsert_file(fname, content)
                         st.success(f"✅ {fname} 就绪")
 
 # ─────────────────────────────────────────────
-# 主界面：多Tab并发聊天
+# 主界面：多Tab独立聊天（✅ 去掉并发，去掉time.sleep）
 # ─────────────────────────────────────────────
 if st.session_state.file_contents:
     filenames = list(st.session_state.file_contents.keys())
@@ -268,8 +216,7 @@ if st.session_state.file_contents:
                 with col_btn1:
                     if st.button("🗑️ 清空", key=f"clear_{fname}"):
                         db_clear_chat(fname)
-                        with state_lock:
-                            st.session_state.chat_histories[fname] = []
+                        st.session_state.chat_histories[fname] = []
                         st.rerun()
                 with col_btn2:
                     if st.button("🗑️ 删除文件", key=f"del_{fname}"):
@@ -288,38 +235,51 @@ if st.session_state.file_contents:
                     with st.chat_message(msg["role"]):
                         st.write(msg["content"])
             
-            # 输入框（支持并发）
+            # 输入框（✅ 同步处理，稳定）
             user_input = st.chat_input(f"💭 问 {fname} 相关问题...", key=f"input_{fname}")
             
             if user_input:
-                # 立即保存用户消息
+                # 保存用户消息
                 user_msg = {"role": "user", "content": user_input}
+                history.append(user_msg)
                 db_add_message(fname, "user", user_input)
-                
-                with state_lock:
-                    history.append(user_msg)
-                    st.session_state.chat_histories[fname] = history
                 
                 # 显示用户消息
                 with st.chat_message("user"):
                     st.write(user_input)
                 
-                # 启动AI后台线程（非阻塞）
+                # ✅ 同步调用AI（稳定，无线程问题）
                 with st.chat_message("assistant"):
-                    ai_placeholder = st.empty()
-                    ai_placeholder.info("🤔 AI 正在独立思考中...")
-                    
-                    thread = threading.Thread(
-                        target=process_ai_request,
-                        args=(fname, user_input, content, history),
-                        daemon=True
-                    )
-                    thread.start()
-                
-                # 强制刷新显示最新AI回复
-                time.sleep(0.5)
-                st.rerun()
+                    with st.spinner("🤔 AI 思考中..."):
+                        try:
+                            messages = [
+                                SystemMessage(content=f"""你是一位专业的学习助手，擅长分析学科知识点。
+以下是用户上传的文档内容，请基于这份文档回答用户的所有问题：
+【文档内容】
+{content}
+请用中文回答，回答要清晰、结构化、专业。""")
+                            ]
+                            
+                            # 添加历史对话
+                            for msg in history:
+                                if msg["role"] == "user":
+                                    messages.append(HumanMessage(content=msg["content"]))
+                                elif msg["role"] == "assistant":
+                                    messages.append(AIMessage(content=msg["content"]))
+                            
+                            response = llm.invoke(messages)
+                            reply = response.content
+                            st.write(reply)
+                            
+                            # 保存AI回复
+                            history.append({"role": "assistant", "content": reply})
+                            db_add_message(fname, "assistant", reply)
+                            st.session_state.chat_histories[fname] = history
+                            
+                        except Exception as e:
+                            st.error(f"AI出错：{str(e)}")
+                            history.append({"role": "assistant", "content": f"AI出错：{str(e)}"})
+                            st.session_state.chat_histories[fname] = history
 else:
     st.title("🤖 AI 学习助手")
-    st.info("👈 从侧边栏上传 PPTX/PDF 开始多文档并发学习")
-    st.caption("* 支持同时在多个Tab提问，AI并行处理 *")
+    st.info("👈 从侧边栏上传 PPTX/PDF 开始多文档学习")
